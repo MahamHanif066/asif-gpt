@@ -1,103 +1,462 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useEffect } from "react";
+import { ChatMessage } from "@/components/chat-message";
+import { ChatInput } from "@/components/chat-input";
+import { MemoryBadge } from "@/components/memory-badge";
+import { ChatSidebar } from "@/components/chat-sidebar";
+import { ChatHeader } from "@/components/chat-header";
+import { MemoryStorageService } from "@/lib/memory-storage";
+import { MemorySummarizationService } from "@/lib/memory-summarization";
+import { TitleGenerationService } from "@/lib/title-generation";
+import { ConversationMemory, ChatMessage as MemoryChatMessage } from "@/lib/memory-types";
+
+interface ChatMessageType {
+  id: string;
+  content: string;
+  isUser: boolean;
+  timestamp: Date;
+}
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [messages, setMessages] = useState<ChatMessageType[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [currentConversation, setCurrentConversation] = useState<ConversationMemory | null>(null);
+  const [isSummarizing, setIsSummarizing] = useState(false);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [isGeneratingTitle, setIsGeneratingTitle] = useState(false);
+  const [sidebarRefreshTrigger, setSidebarRefreshTrigger] = useState(0);
+  
+  const memoryStorage = MemoryStorageService.getInstance();
+  const summarizationService = MemorySummarizationService.getInstance();
+  const titleGenerationService = TitleGenerationService.getInstance();
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  // Initialize conversation and load context
+  useEffect(() => {
+    const initializeConversation = () => {
+      let conversation = memoryStorage.getCurrentConversation();
+      
+      if (!conversation) {
+        // Load user context from localStorage
+        const savedContext = localStorage.getItem('chat_context') || '';
+        conversation = memoryStorage.createConversation(savedContext);
+      } else {
+        // Always use the latest context from localStorage
+        const latestContext = localStorage.getItem('chat_context') || '';
+        
+        // Update conversation context if it's different
+        if (latestContext !== conversation.context) {
+          conversation.context = latestContext;
+          memoryStorage.updateConversation(conversation);
+        }
+      }
+      
+      setCurrentConversation(conversation);
+      
+      // Convert memory messages to display messages
+      const displayMessages: ChatMessageType[] = conversation.messages.map(msg => ({
+        id: msg.id,
+        content: msg.content,
+        isUser: msg.isUser,
+        timestamp: new Date(msg.timestamp)
+      }));
+      
+      setMessages(displayMessages);
+    };
+
+    initializeConversation();
+  }, [memoryStorage]);
+
+  // Listen for context changes
+  useEffect(() => {
+    const handleContextChange = () => {
+      const latestContext = localStorage.getItem('chat_context') || '';
+      
+      // Update current conversation context if it exists
+      if (currentConversation) {
+        currentConversation.context = latestContext;
+        memoryStorage.updateConversation(currentConversation);
+      }
+    };
+
+    // Listen for storage changes
+    window.addEventListener('storage', handleContextChange);
+    
+    // Also listen for custom context update events
+    window.addEventListener('contextUpdated', handleContextChange);
+    
+    return () => {
+      window.removeEventListener('storage', handleContextChange);
+      window.removeEventListener('contextUpdated', handleContextChange);
+    };
+  }, [currentConversation, memoryStorage]);
+
+  // Handle summarization when needed
+  const handleSummarization = async () => {
+    if (!currentConversation || isSummarizing) return;
+
+    setIsSummarizing(true);
+    
+    try {
+      const { oldMessages, recentMessages } = memoryStorage.getMessagesForSummarization();
+      
+      if (oldMessages.length === 0) {
+        setIsSummarizing(false);
+        return;
+      }
+
+      // Get API key and provider
+      const selectedProvider = localStorage.getItem('selected_provider') || 'gemini';
+      const apiKey = selectedProvider === 'gemini' 
+        ? localStorage.getItem('gemini_api_key')
+        : localStorage.getItem('openai_api_key');
+
+      if (!apiKey) {
+        setIsSummarizing(false);
+        return;
+      }
+
+      // Summarize old messages
+      const result = await summarizationService.summarizeConversation(
+        oldMessages,
+        currentConversation.context,
+        apiKey,
+        selectedProvider
+      );
+
+      // Update conversation with summary
+      const updatedConversation = {
+        ...currentConversation,
+        summary: result.summary,
+        messages: [...recentMessages], // Keep only recent messages
+        totalWords: result.totalWords + recentMessages.reduce((sum, msg) => sum + msg.content.split(/\s+/).length, 0),
+        lastSummarizedAt: new Date(),
+        isSummarizing: false
+      };
+
+      memoryStorage.updateConversation(updatedConversation);
+      setCurrentConversation(updatedConversation);
+
+      // Update display messages
+      const displayMessages: ChatMessageType[] = recentMessages.map(msg => ({
+        id: msg.id,
+        content: msg.content,
+        isUser: msg.isUser,
+        timestamp: new Date(msg.timestamp)
+      }));
+      
+      setMessages(displayMessages);
+      
+    } catch (error) {
+      console.error('Summarization failed:', error);
+    } finally {
+      setIsSummarizing(false);
+    }
+  };
+
+  // Generate title for conversation
+  const generateTitle = async (firstMessage: string) => {
+    if (!currentConversation || currentConversation.title !== 'New Chat') return;
+
+    setIsGeneratingTitle(true);
+    
+    try {
+      const selectedProvider = localStorage.getItem('selected_provider') || 'gemini';
+      const apiKey = selectedProvider === 'gemini' 
+        ? localStorage.getItem('gemini_api_key')
+        : localStorage.getItem('openai_api_key');
+
+      if (!apiKey) {
+        return;
+      }
+
+      const title = await titleGenerationService.generateTitle(
+        firstMessage,
+        apiKey,
+        selectedProvider
+      );
+      memoryStorage.updateConversationTitle(currentConversation.id, title);
+      
+      // Update current conversation
+      const updatedConversation = {
+        ...currentConversation,
+        title: title
+      };
+      setCurrentConversation(updatedConversation);
+      
+      // Force sidebar to refresh
+      setSidebarRefreshTrigger(prev => prev + 1);
+      
+    } catch (error) {
+      console.error('Title generation failed:', error);
+    } finally {
+      setIsGeneratingTitle(false);
+    }
+  };
+
+  // Handle new chat
+  const handleNewChat = () => {
+    const savedContext = localStorage.getItem('chat_context') || '';
+    const newConversation = memoryStorage.createConversation(savedContext);
+    
+    setCurrentConversation(newConversation);
+    setMessages([]);
+    setIsSidebarOpen(false);
+    
+    // Refresh sidebar to show new chat
+    setSidebarRefreshTrigger(prev => prev + 1);
+  };
+
+  // Handle conversation selection
+  const handleConversationSelect = (conversation: ConversationMemory) => {
+    setCurrentConversation(conversation);
+    
+    // Convert memory messages to display messages
+    const displayMessages: ChatMessageType[] = conversation.messages.map(msg => ({
+      id: msg.id,
+      content: msg.content,
+      isUser: msg.isUser,
+      timestamp: new Date(msg.timestamp)
+    }));
+    
+    setMessages(displayMessages);
+    setIsSidebarOpen(false);
+  };
+
+  // Handle conversation delete
+  const handleConversationDelete = (conversationId: string) => {
+    if (currentConversation?.id === conversationId) {
+      // If deleting current conversation, start a new one
+      handleNewChat();
+    }
+  };
+
+  // Handle conversation rename
+  const handleConversationRename = (conversationId: string, newTitle: string) => {
+    if (currentConversation?.id === conversationId) {
+      setCurrentConversation(prev => prev ? { ...prev, title: newTitle } : null);
+    }
+    
+    // Refresh sidebar to show updated title
+    setSidebarRefreshTrigger(prev => prev + 1);
+  };
+
+  const handleSendMessage = async (message: string) => {
+    if (!currentConversation) return;
+
+    const userMessage: ChatMessageType = {
+      id: Date.now().toString(),
+      content: message,
+      isUser: true,
+      timestamp: new Date()
+    };
+    
+    // Add user message to memory and display
+    const memoryUserMessage: MemoryChatMessage = {
+      id: userMessage.id,
+      content: userMessage.content,
+      isUser: userMessage.isUser,
+      timestamp: userMessage.timestamp
+    };
+    
+    // Check if this is the first message before adding it
+    const isFirstMessage = currentConversation.messages.length === 0;
+    
+    memoryStorage.addMessage(memoryUserMessage);
+    setMessages(prev => [...prev, userMessage]);
+    setIsLoading(true);
+
+    // Generate title if this is the first message
+    if (isFirstMessage) {
+      generateTitle(message);
+    }
+    
+    try {
+      // Get selected provider and API key from localStorage
+      const selectedProvider = localStorage.getItem('selected_provider') || 'gemini';
+      const apiKey = selectedProvider === 'gemini' 
+        ? localStorage.getItem('gemini_api_key')
+        : localStorage.getItem('openai_api_key');
+
+      if (!apiKey) {
+        const errorMessage: ChatMessageType = {
+          id: (Date.now() + 1).toString(),
+          content: `Please add your ${selectedProvider} API key in the settings dialog.`,
+          isUser: false,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMessage]);
+        return;
+      }
+
+      // Check if summarization is needed
+      if (memoryStorage.needsSummarization()) {
+        await handleSummarization();
+      }
+
+      // Create AI message placeholder for streaming
+      const aiMessageId = (Date.now() + 1).toString();
+      const aiMessage: ChatMessageType = {
+        id: aiMessageId,
+        content: '',
+        isUser: false,
+        timestamp: new Date()
+      };
+      
+      setMessages(prev => [...prev, aiMessage]);
+
+      // Prepare context for API call (include conversation history and summary)
+      const conversation = memoryStorage.getCurrentConversation();
+      
+      // Get the latest context from localStorage (user might have updated it)
+      const latestContext = localStorage.getItem('chat_context') || '';
+      let fullContext = latestContext || conversation?.context || '';
+      
+      // Add conversation summary if available
+      if (conversation?.summary) {
+        fullContext += `\n\nPrevious conversation summary: ${conversation.summary}`;
+      }
+      
+      // Add recent conversation history
+      if (conversation?.messages && conversation.messages.length > 0) {
+        const conversationHistory = conversation.messages
+          .map(msg => `${msg.isUser ? 'User' : 'Assistant'}: ${msg.content}`)
+          .join('\n\n');
+        
+        fullContext += `\n\nRecent conversation history:\n${conversationHistory}`;
+      }
+
+      // Send message to API
+      const response = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          message: message,
+          context: fullContext,
+          apiKey: apiKey,
+          selectedProvider: selectedProvider
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        setMessages(prev => prev.map(msg => 
+          msg.id === aiMessageId 
+            ? { ...msg, content: `Error: ${errorData.error}` }
+            : msg
+        ));
+        return;
+      }
+
+      // Handle JSON response
+      const data = await response.json();
+      
+      if (data.error) {
+        setMessages(prev => prev.map(msg => 
+          msg.id === aiMessageId 
+            ? { ...msg, content: `Error: ${data.error}` }
+            : msg
+        ));
+      } else {
+        // Simulate streaming by showing words one by one
+        const words = data.message.split(' ');
+        let currentContent = '';
+        
+        for (let i = 0; i < words.length; i++) {
+          currentContent += words[i] + (i < words.length - 1 ? ' ' : '');
+          
+          setMessages(prev => prev.map(msg => 
+            msg.id === aiMessageId 
+              ? { ...msg, content: currentContent }
+              : msg
+          ));
+          
+          // Add a small delay between words to simulate streaming
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+
+        // Add AI message to memory
+        const memoryAiMessage: MemoryChatMessage = {
+          id: aiMessageId,
+          content: data.message,
+          isUser: false,
+          timestamp: new Date()
+        };
+        
+        memoryStorage.addMessage(memoryAiMessage);
+      }
+    } catch {
+      // Add error message
+      const errorMessage: ChatMessageType = {
+        id: (Date.now() + 1).toString(),
+        content: 'Failed to send message. Please try again.',
+        isUser: false,
+        timestamp: new Date()
+      };
+      
+      setMessages(prev => [...prev, errorMessage]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="h-screen flex flex-col bg-background w-full">
+      {/* Header - Full Width */}
+      <ChatHeader
+        isSidebarOpen={isSidebarOpen}
+        onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+        currentConversation={currentConversation}
+        isGeneratingTitle={isGeneratingTitle}
+      />
+
+      {/* Main Content Area */}
+      <div className="flex-1 flex relative">
+        {/* Sidebar */}
+        <ChatSidebar
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+          currentConversationId={currentConversation?.id || null}
+          onConversationSelect={handleConversationSelect}
+          onNewChat={handleNewChat}
+          onConversationDelete={handleConversationDelete}
+          onConversationRename={handleConversationRename}
+          refreshTrigger={sidebarRefreshTrigger}
+        />
+
+        {/* Chat Content */}
+        <div className="flex-1 flex flex-col">
+          {/* Memory Badge */}
+          <MemoryBadge 
+            isSummarizing={isSummarizing}
+            totalWords={currentConversation?.totalWords || 0}
+            maxWords={262144}
+          />
+
+          {/* Chat Messages Area */}
+          <div className="flex-1 p-6 space-y-4 overflow-y-auto">
+            <div className="max-w-4xl mx-auto space-y-4">
+              {messages.map((msg) => (
+                <ChatMessage
+                  key={msg.id}
+                  id={msg.id}
+                  content={msg.content}
+                  isUser={msg.isUser}
+                  timestamp={msg.timestamp}
+                />
+              ))}
+            </div>
+          </div>
+
+          {/* Message Input Area - Fixed to bottom */}
+          <ChatInput 
+            onSendMessage={handleSendMessage}
+            isLoading={isLoading}
+          />
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      </div>
     </div>
   );
 }
