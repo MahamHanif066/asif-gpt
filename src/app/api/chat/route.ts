@@ -18,6 +18,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'API key not provided. Please add it using the settings dialog' },
         { status: 400 }
+        
       );
     }
 
