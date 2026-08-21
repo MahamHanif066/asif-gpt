@@ -43,7 +43,7 @@ export function ChatHeader({
           
           <div className="flex items-center gap-2">
             <Avatar className="h-8 w-8">
-              <AvatarImage src="/asif.jpg" alt="User Avatar" />
+              <AvatarImage src="/Maham.jpg" alt="User Avatar" />
               <AvatarFallback>U</AvatarFallback>
             </Avatar>
             <span className="text-sm font-medium">Welcome, {USER_NAME}</span>
