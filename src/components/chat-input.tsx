@@ -12,17 +12,60 @@ interface ChatInputProps {
   isLoading?: boolean;
 }
 
-export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) {
+interface SpeechRecognitionResultItem {
+  transcript: string;
+}
+
+interface SpeechRecognitionResult {
+  [index: number]: SpeechRecognitionResultItem;
+  length: number;
+}
+
+interface SpeechRecognitionEvent {
+  results: {
+    [index: number]: SpeechRecognitionResult;
+    length: number;
+  };
+}
+
+interface SpeechRecognitionLike {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start: () => void;
+  stop: () => void;
+}
+
+interface SpeechRecognitionConstructor {
+  new (): SpeechRecognitionLike;
+}
+
+interface SpeechRecognitionWindow extends Window {
+  SpeechRecognition?: SpeechRecognitionConstructor;
+  webkitSpeechRecognition?: SpeechRecognitionConstructor;
+}
+
+export function ChatInput({
+  onSendMessage,
+  isLoading = false,
+}: ChatInputProps) {
   const [message, setMessage] = useState("");
   const [context, setContext] = useState("");
-  const [selectedProvider, setSelectedProvider] = useState<"gemini" | "openai">("gemini");
+  const [selectedProvider, setSelectedProvider] = useState<
+    "gemini" | "openai"
+  >("gemini");
   const [isListening, setIsListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(true);
 
-  const recognitionRef = useRef<any>(null);
+  const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
   useEffect(() => {
-    const savedProvider = (localStorage.getItem("selected_provider") as "gemini" | "openai") || "gemini";
+    const savedProvider =
+      (localStorage.getItem("selected_provider") as "gemini" | "openai") ||
+      "gemini";
     const savedContext = localStorage.getItem("chat_context") || "";
 
     setSelectedProvider(savedProvider);
@@ -30,8 +73,11 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
   }, []);
 
   useEffect(() => {
+    const speechWindow = window as SpeechRecognitionWindow;
+
     const SpeechRecognition =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      speechWindow.SpeechRecognition ||
+      speechWindow.webkitSpeechRecognition;
 
     if (!SpeechRecognition) {
       setVoiceSupported(false);
@@ -43,11 +89,13 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
     recognition.interimResults = true;
     recognition.lang = "en-US";
 
-    recognition.onresult = (event: any) => {
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
       let transcript = "";
+
       for (let i = 0; i < event.results.length; i++) {
         transcript += event.results[i][0].transcript;
       }
+
       setMessage(transcript);
     };
 
@@ -103,7 +151,9 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-2 border border-border rounded-full pl-5 pr-2 py-2 bg-card">
           <Input
-            placeholder={isListening ? "Listening..." : "Type your message here..."}
+            placeholder={
+              isListening ? "Listening..." : "Type your message here..."
+            }
             value={message}
             onChange={(e) => setMessage(e.target.value)}
             onKeyPress={handleKeyPress}
@@ -122,7 +172,11 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
                   : "bg-accent text-primary hover:bg-accent/80"
               }`}
             >
-              {isListening ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+              {isListening ? (
+                <MicOff className="h-4 w-4" />
+              ) : (
+                <Mic className="h-4 w-4" />
+              )}
             </Button>
           )}
 
@@ -145,7 +199,10 @@ export function ChatInput({ onSendMessage, isLoading = false }: ChatInputProps) 
             selectedProvider={selectedProvider}
             onProviderChange={handleProviderChange}
           />
-          <ContextDialog context={context} onContextChange={handleContextChange} />
+          <ContextDialog
+            context={context}
+            onContextChange={handleContextChange}
+          />
         </div>
       </div>
     </div>
